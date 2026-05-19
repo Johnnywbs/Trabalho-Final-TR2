@@ -1,71 +1,70 @@
-# Adaptive Bitrate Streaming Client
+# Cliente de Streaming Adaptativo (ABR)
 
-A Python simulation of an ABR (Adaptive Bitrate) streaming client. The client downloads video segments from a server, dynamically adjusting the quality level based on real-time network conditions, while tracking buffer state and logging performance metrics.
-
----
-
-## Project Structure
-
-```
-trabalhoFinal/
-├── main.py             # Entry point — orchestrates the full streaming loop
-├── client.py           # HTTP client for fetching the manifest and downloading segments
-├── abr.py              # ABR algorithm — decides quality level for each segment
-├── buffer_manager.py   # Simulates the video playback buffer
-├── metrics.py          # Logs per-segment metrics to a CSV file
-└── plot.py             # Generates a chart from the CSV data
-```
+Uma simulação em Python de um cliente de streaming ABR (Adaptive Bitrate). O cliente baixa segmentos de vídeo de um servidor, ajustando dinamicamente o nível de qualidade com base nas condições da rede em tempo real, enquanto rastreia o estado do buffer e registra métricas de desempenho.
 
 ---
 
-## How It Works
-
-The client simulates what a real video player does when streaming: it continuously downloads video segments one by one, deciding on-the-fly whether to stream at high quality (when the connection is fast) or drop to a lower quality (when the connection is slow), all while trying to avoid the buffer from running out and causing the video to freeze.
-
-### Step-by-Step Flow
+## Estrutura do Projeto
 
 ```
-1. Fetch manifest        → learn available quality levels and server URL
-2. For each segment:
-   a. ABR decides quality → based on recent measured throughput
-   b. Download segment    → measure actual download time and throughput
-   c. Update ABR history  → feed new throughput into the sliding window
-   d. Update buffer       → simulate how the buffer level changes
-   e. Log metrics         → write a row to the CSV
-3. Generate chart         → visualize throughput vs. quality over time
+├── main.py             # Ponto de entrada — orquestra o loop completo de streaming
+├── client.py           # Cliente HTTP para buscar o manifest e baixar segmentos
+├── abr.py              # Algoritmo ABR — decide o nível de qualidade de cada segmento
+├── buffer_manager.py   # Simula o buffer de reprodução do vídeo
+├── metrics.py          # Registra métricas por segmento em um arquivo CSV
+└── plot.py             # Gera um gráfico a partir dos dados do CSV
 ```
 
 ---
 
-## Modules in Detail
+## Como Funciona
 
-### `main.py` — Orchestrator
+O cliente simula o que um player de vídeo real faz durante o streaming: ele baixa segmentos de vídeo continuamente, um por um, decidindo em tempo real se deve transmitir em alta qualidade (quando a conexão está rápida) ou reduzir para uma qualidade menor (quando a conexão está lenta), tudo isso tentando evitar que o buffer se esgote e cause travamentos.
 
-The entry point. Instantiates all components and runs the segment download loop.
+### Fluxo Passo a Passo
 
-**Key constants:**
-| Constant | Value | Description |
+```
+1. Buscar manifest       → descobrir as qualidades disponíveis e a URL do servidor
+2. Para cada segmento:
+   a. ABR decide a qualidade → baseado na vazão medida recentemente
+   b. Baixar segmento         → medir tempo de download e vazão real
+   c. Atualizar histórico ABR → registrar a nova vazão na janela deslizante
+   d. Atualizar buffer        → simular a variação do nível do buffer
+   e. Registrar métricas      → gravar uma linha no CSV
+3. Gerar gráfico         → visualizar vazão vs. qualidade ao longo do tempo
+```
+
+---
+
+## Módulos em Detalhe
+
+### `main.py` — Orquestrador
+
+O ponto de entrada do projeto. Instancia todos os componentes e executa o loop de download dos segmentos.
+
+**Constantes principais:**
+| Constante | Valor | Descrição |
 |---|---|---|
-| `MANIFEST_URL` | `http://…:8080/manifest` | Address of the streaming server manifest |
-| `TOTAL_SEGMENTS` | `10` | Number of segments to download |
-| `SEGMENT_DURATION_S` | read from manifest (default `2.0`) | Duration of each video segment in seconds |
+| `MANIFEST_URL` | `http://…:8080/manifest` | Endereço do manifest no servidor de streaming |
+| `TOTAL_SEGMENTS` | `10` | Número de segmentos a serem baixados |
+| `SEGMENT_DURATION_S` | lido do manifest (padrão `2.0`) | Duração de cada segmento de vídeo em segundos |
 
-**Loop logic per segment:**
-1. Ask the ABR for the best quality → `abr.get_next_quality()`
-2. Look up the download URL for that quality in the manifest
-3. Download the segment → `client.download_segment(segment_url)`
-4. Report the measured throughput back to ABR → `abr.record_throughput()`
-5. Update the buffer simulation → `buffer.update_buffer()`
-6. Write all metrics for this segment to the CSV → `logger.log_segment()`
+**Lógica do loop por segmento:**
+1. Pedir ao ABR a melhor qualidade → `abr.get_next_quality()`
+2. Localizar a URL de download dessa qualidade no manifest
+3. Baixar o segmento → `client.download_segment(segment_url)`
+4. Informar a vazão medida ao ABR → `abr.record_throughput()`
+5. Atualizar a simulação do buffer → `buffer.update_buffer()`
+6. Gravar todas as métricas do segmento no CSV → `logger.log_segment()`
 
 ---
 
-### `client.py` — HTTP Client (`StreamingClient`)
+### `client.py` — Cliente HTTP (`StreamingClient`)
 
-Handles all network communication using Python's built-in `urllib`.
+Responsável por toda comunicação de rede, usando o módulo `urllib` da biblioteca padrão do Python.
 
 #### `fetch_manifest()`
-Performs a GET request to `MANIFEST_URL` and parses the JSON response. The manifest describes the available quality representations and the server base URL. Expected structure:
+Faz uma requisição GET para a `MANIFEST_URL` e interpreta a resposta JSON. O manifest descreve as representações de qualidade disponíveis e a URL base do servidor. Estrutura esperada:
 
 ```json
 {
@@ -81,164 +80,164 @@ Performs a GET request to `MANIFEST_URL` and parses the JSON response. The manif
 ```
 
 #### `download_segment(segment_url)`
-Downloads one segment and measures network performance:
+Baixa um segmento e mede o desempenho da rede:
 
 ```
-throughput (kbps) = (size_bytes × 8 / 1000) / download_time_s
+vazão (kbps) = (tamanho_bytes × 8 / 1000) / tempo_download_s
 ```
 
-A floor of `0.001s` is applied to `download_time_s` to prevent division by zero on extremely fast local connections.
+Um valor mínimo de `0.001s` é aplicado ao `download_time_s` para evitar divisão por zero em conexões locais extremamente rápidas.
 
-Returns `(size_bytes, download_time_s, throughput_kbps)`.
+Retorna `(size_bytes, download_time_s, throughput_kbps)`.
 
 ---
 
-### `abr.py` — Adaptive Bitrate Algorithm (`RateBasedABR`)
+### `abr.py` — Algoritmo de Bitrate Adaptativo (`RateBasedABR`)
 
-Implements a **Rate-Based ABR** algorithm. The goal is to always choose the highest quality whose required bitrate fits comfortably within the current estimated network capacity.
+Implementa um algoritmo **ABR Baseado em Taxa (Rate-Based)**. O objetivo é sempre escolher a maior qualidade cujo bitrate caiba confortavelmente dentro da capacidade de rede estimada.
 
-#### Parameters
-| Parameter | Default | Description |
+#### Parâmetros
+| Parâmetro | Padrão | Descrição |
 |---|---|---|
-| `safety_factor` | `0.8` | Multiplier applied to the average throughput to create a safety margin (80%) |
-| `window_size` | `3` | Number of recent segments kept in the throughput history |
+| `safety_factor` | `0.8` | Multiplicador aplicado à vazão média para criar uma margem de segurança (80%) |
+| `window_size` | `3` | Número de segmentos recentes mantidos no histórico de vazão |
 
 #### `record_throughput(throughput_kbps)`
-Appends the latest measurement to a sliding window. Once the window exceeds `window_size`, the oldest entry is dropped. This means the ABR reacts quickly to network changes without being affected by a single outlier.
+Adiciona a medição mais recente a uma janela deslizante. Quando a janela ultrapassa `window_size`, a entrada mais antiga é descartada. Isso faz com que o ABR reaja rapidamente a mudanças na rede sem ser impactado por um único valor atípico.
 
 #### `get_next_quality()`
-Decision logic:
+Lógica de decisão:
 
 ```
-1. If no history yet → return the lowest quality (safe default)
-2. Compute the average of the sliding window
-3. Apply the safety margin:  safe_throughput = average × safety_factor
-4. Iterate quality levels from highest to lowest bitrate
-5. Return the first level whose bitrate_kbps ≤ safe_throughput
-6. If none fit → return the lowest quality (last resort)
+1. Se não há histórico → retornar a menor qualidade (padrão seguro)
+2. Calcular a média da janela deslizante
+3. Aplicar a margem de segurança:  vazão_segura = média × safety_factor
+4. Iterar os níveis de qualidade do maior para o menor bitrate
+5. Retornar o primeiro nível cujo bitrate_kbps ≤ vazão_segura
+6. Se nenhum couber → retornar a menor qualidade (último recurso)
 ```
 
-The safety factor (0.8) means the algorithm only picks a quality whose bitrate uses at most 80% of the estimated capacity, leaving headroom for throughput fluctuations.
+O fator de segurança (0.8) significa que o algoritmo só escolhe uma qualidade cujo bitrate utiliza no máximo 80% da capacidade estimada, deixando margem para flutuações na vazão.
 
-**Example:**
+**Exemplo:**
 
 ```
-Recent throughput: [3000, 2800, 3200] kbps
-Average:           3000 kbps
-Safe throughput:   2400 kbps  (3000 × 0.8)
-Quality chosen:    720p       (requires 2500 kbps? No. 480p requires 1000 kbps? Yes → 480p)
+Vazão recente:   [3000, 2800, 3200] kbps
+Média:           3000 kbps
+Vazão segura:    2400 kbps  (3000 × 0.8)
+Qualidade:       720p requer 2500 kbps? Não. 480p requer 1000 kbps? Sim → 480p
 ```
 
 ---
 
-### `buffer_manager.py` — Buffer Simulation (`BufferManager`)
+### `buffer_manager.py` — Simulação de Buffer (`BufferManager`)
 
-Models the playback buffer — the pool of pre-downloaded video content that keeps the player running smoothly even if the network hiccups briefly.
+Modela o buffer de reprodução — o estoque de conteúdo pré-baixado que mantém o player rodando sem interrupções mesmo que a rede sofra instabilidades momentâneas.
 
-#### State
-| Attribute | Description |
+#### Estado
+| Atributo | Descrição |
 |---|---|
-| `buffer_level_s` | Current buffer depth in seconds of video |
-| `total_rebuffer_events` | Total number of stall events across the session |
-| `total_stall_duration_s` | Cumulative freeze time in seconds |
+| `buffer_level_s` | Profundidade atual do buffer em segundos de vídeo |
+| `total_rebuffer_events` | Total de travamentos ocorridos durante a sessão |
+| `total_stall_duration_s` | Tempo total acumulado de congelamento em segundos |
 
 #### `update_buffer(download_time_s, segment_duration_s)`
 
-The core of the simulation. It models two simultaneous events that happen during every segment download:
+O núcleo da simulação. Modela dois eventos simultâneos que acontecem a cada download:
 
 ```
-Phase 1 — Consumption:
-  While downloading takes download_time_s, the player keeps playing.
+Fase 1 — Consumo:
+  Enquanto o download leva download_time_s, o player continua reproduzindo.
   buffer_level -= download_time_s
 
-Phase 2 — Stall check:
-  If buffer_level < 0:
-    → Video froze. stall_duration = abs(buffer_level)
-    → buffer_level reset to 0
+Fase 2 — Verificação de travamento:
+  Se buffer_level < 0:
+    → O vídeo travou. stall_duration = abs(buffer_level)
+    → buffer_level é redefinido para 0
 
-Phase 3 — Replenishment:
-  Download is complete. New content added.
+Fase 3 — Reabastecimento:
+  O download terminou. O novo conteúdo é adicionado ao buffer.
   buffer_level += segment_duration_s
 ```
 
-Returns `(buffer_can_play, rebuffer_event, stall_duration_s)`.
+Retorna `(buffer_can_play, rebuffer_event, stall_duration_s)`.
 
-**Scenario A — Fast network (no stall):**
+**Cenário A — Rede rápida (sem travamento):**
 ```
-buffer before: 4.0s
-download_time: 0.5s  → buffer drops to 3.5s  (no stall)
-segment adds:  2.0s  → buffer rises to 5.5s
+buffer antes:    4.0s
+download:        0.5s  → buffer cai para 3.5s  (sem travamento)
+segmento add:    2.0s  → buffer sobe para 5.5s
 ```
 
-**Scenario B — Slow network (stall):**
+**Cenário B — Rede lenta (com travamento):**
 ```
-buffer before: 1.0s
-download_time: 3.0s  → buffer drops to -2.0s  (froze for 2.0s!)
-stall_duration: 2.0s, buffer reset to 0.0s
-segment adds:  2.0s  → buffer rises to 2.0s
+buffer antes:    1.0s
+download:        3.0s  → buffer cai para -2.0s  (travou por 2.0s!)
+stall_duration:  2.0s, buffer redefinido para 0.0s
+segmento add:    2.0s  → buffer sobe para 2.0s
 ```
 
 ---
 
-### `metrics.py` — CSV Logger (`MetricsLogger`)
+### `metrics.py` — Logger CSV (`MetricsLogger`)
 
-Writes one row per segment to `streaming_metrics.csv`. The file is (re)created fresh each time the client starts.
+Grava uma linha por segmento em `streaming_metrics.csv`. O arquivo é (re)criado do zero toda vez que o cliente inicia.
 
-#### CSV Columns
+#### Colunas do CSV
 
-| Column | Type | Description |
+| Coluna | Tipo | Descrição |
 |---|---|---|
-| `segment` | int | Segment sequence number (1, 2, 3, …) |
-| `timestamp` | ISO 8601 string | Wall-clock time when the segment was logged |
-| `server_id` | string | Server identifier (default `"A"`) |
-| `quality` | string | Quality label chosen by ABR (e.g. `"720p"`) |
-| `bitrate_kbps` | int | Nominal bitrate of the chosen quality |
-| `throughput_kbps` | float | Actual measured network throughput |
-| `download_time_s` | float | Time taken to download the segment |
-| `jitter_network_ms` | float | Per-segment network jitter (reserved, default `0`) |
-| `jitter_ewma_ms` | float | EWMA-smoothed jitter (reserved, default `0`) |
-| `buffer_level_s` | float | Buffer depth after the segment was processed |
-| `buffer_can_play` | int | `1` if playback was continuous, `0` if it stalled |
-| `rebuffer_event` | int | `1` if a stall occurred during this segment |
-| `stall_duration_s` | float | Duration of the stall in seconds (`0` if none) |
-| `failover_total` | int | Number of server failovers (reserved, default `0`) |
+| `segment` | int | Número de sequência do segmento (1, 2, 3, …) |
+| `timestamp` | string ISO 8601 | Horário de relógio quando o segmento foi registrado |
+| `server_id` | string | Identificador do servidor (padrão `"A"`) |
+| `quality` | string | Rótulo de qualidade escolhido pelo ABR (ex: `"720p"`) |
+| `bitrate_kbps` | int | Bitrate nominal da qualidade escolhida |
+| `throughput_kbps` | float | Vazão de rede real medida |
+| `download_time_s` | float | Tempo gasto para baixar o segmento |
+| `jitter_network_ms` | float | Jitter de rede por segmento (reservado, padrão `0`) |
+| `jitter_ewma_ms` | float | Jitter suavizado por EWMA (reservado, padrão `0`) |
+| `buffer_level_s` | float | Nível do buffer após o processamento do segmento |
+| `buffer_can_play` | int | `1` se a reprodução foi contínua, `0` se travou |
+| `rebuffer_event` | int | `1` se houve travamento neste segmento |
+| `stall_duration_s` | float | Duração do travamento em segundos (`0` se não houve) |
+| `failover_total` | int | Número de failovers de servidor (reservado, padrão `0`) |
 
 ---
 
-### `plot.py` — Chart Generator
+### `plot.py` — Gerador de Gráfico
 
-Reads `streaming_metrics.csv` and produces a dual-line chart saved as `baseline_chart.png`.
+Lê `streaming_metrics.csv` e produz um gráfico de duas linhas salvo como `baseline_chart.png`.
 
-- **Blue dashed line** — actual network throughput per segment
-- **Orange step line** — quality level (bitrate) chosen by the ABR per segment
-- **Labels** — quality name (e.g. `480p`) annotated above each orange point
+- **Linha azul tracejada** — vazão de rede real por segmento
+- **Linha laranja em degrau** — nível de qualidade (bitrate) escolhido pelo ABR por segmento
+- **Rótulos** — nome da qualidade (ex: `480p`) anotado acima de cada ponto laranja
 
-The step chart (`plt.step`) is intentional: quality does not ramp smoothly — it jumps abruptly from one level to another between segments.
+O gráfico em degrau (`plt.step`) é intencional: a qualidade não sobe em rampa — ela muda abruptamente de um nível para outro entre segmentos.
 
 ---
 
-## Output Files
+## Arquivos de Saída
 
-| File | Generated by | Description |
+| Arquivo | Gerado por | Descrição |
 |---|---|---|
-| `streaming_metrics.csv` | `MetricsLogger` | Per-segment performance log |
-| `baseline_chart.png` | `plot.py` | Throughput vs. quality visualization |
+| `streaming_metrics.csv` | `MetricsLogger` | Log de desempenho por segmento |
+| `baseline_chart.png` | `plot.py` | Visualização de vazão vs. qualidade |
 
 ---
 
-## Running the Project
+## Como Executar
 
 ```bash
 python main.py
 ```
 
-This will:
-1. Fetch the manifest from the server
-2. Download 10 segments, printing progress to the terminal
-3. Save `streaming_metrics.csv`
-4. Generate and display `baseline_chart.png`
+Isso irá:
+1. Buscar o manifest no servidor
+2. Baixar 10 segmentos, imprimindo o progresso no terminal
+3. Salvar `streaming_metrics.csv`
+4. Gerar e exibir `baseline_chart.png`
 
-To regenerate the chart from an existing CSV without re-downloading:
+Para regenerar o gráfico a partir de um CSV existente sem re-baixar os segmentos:
 
 ```bash
 python plot.py
@@ -246,16 +245,16 @@ python plot.py
 
 ---
 
-## Dependencies
+## Dependências
 
-| Library | Used in | Purpose |
+| Biblioteca | Usada em | Finalidade |
 |---|---|---|
-| `urllib` | `client.py` | HTTP requests (standard library) |
-| `csv` | `metrics.py`, `plot.py` | CSV read/write (standard library) |
-| `datetime` | `metrics.py` | ISO 8601 timestamps (standard library) |
-| `matplotlib` | `plot.py` | Chart generation (third-party) |
+| `urllib` | `client.py` | Requisições HTTP (biblioteca padrão) |
+| `csv` | `metrics.py`, `plot.py` | Leitura/escrita de CSV (biblioteca padrão) |
+| `datetime` | `metrics.py` | Timestamps ISO 8601 (biblioteca padrão) |
+| `matplotlib` | `plot.py` | Geração de gráficos (terceiro) |
 
-Install third-party dependencies:
+Instalar dependências de terceiros:
 
 ```bash
 pip install matplotlib
