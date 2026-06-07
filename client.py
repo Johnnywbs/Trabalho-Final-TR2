@@ -4,15 +4,12 @@ import json
 import time
 
 
-# ---------------------------------------------------------------------------
-# Constantes de timeout
-# ---------------------------------------------------------------------------
+
 HEALTH_CHECK_TIMEOUT_S     = 3
-SEGMENT_DOWNLOAD_TIMEOUT_S = 15
+SEGMENT_DOWNLOAD_TIMEOUT_S = 5
 CHUNK_SIZE = 4096
 
 MANIFEST_URL = "http://137.131.178.229:8080/manifest"
-
 
 SERVER_ID_NORMALIZE = {
     "srv-B": "B",
@@ -20,20 +17,16 @@ SERVER_ID_NORMALIZE = {
 }
 
 def normalizar_id(raw_id: str) -> str:
-    """Retorna o ID normalizado para o CSV ('A', 'B', …)."""
     return SERVER_ID_NORMALIZE.get(raw_id, raw_id)
 
 
 class StreamingClient:
+
     def __init__(self):
         self.manifest_data  = None
-        self.servers        = []   # lista de dicts lida e normalizada do manifest
+        self.servers        = []
         self.current_index  = 0
         self.failover_total = 0
-
-    # ------------------------------------------------------------------
-    # Propriedades
-    # ------------------------------------------------------------------
 
     @property
     def current_server(self):
@@ -52,10 +45,7 @@ class StreamingClient:
     # ------------------------------------------------------------------
 
     def fetch_manifest(self):
-
         urls_para_tentar = [MANIFEST_URL]
-
-        # Se já temos servidores de uma tentativa anterior, adiciona os demais
         for s in self.servers:
             candidate_url = s["url"].rstrip("/") + "/manifest"
             if candidate_url not in urls_para_tentar:
@@ -73,13 +63,9 @@ class StreamingClient:
                     raw = json.loads(resp.read().decode("utf-8"))
                     self.manifest_data = raw
 
-                    # Lê e normaliza a lista de servidores do manifest
                     raw_servers = raw.get("servers", [])
                     self.servers = sorted(
-                        [
-                            {**s, "id": normalizar_id(s["id"])}
-                            for s in raw_servers
-                        ],
+                        [{**s, "id": normalizar_id(s["id"])} for s in raw_servers],
                         key=lambda s: s.get("priority", 99)
                     )
 
@@ -87,8 +73,6 @@ class StreamingClient:
                         print("[Cliente] Manifest sem lista de servidores. Encerrando.")
                         return None
 
-                    # Descobre qual servidor respondeu e aponta current_index para ele.
-                    # Usa a URL base (sem /manifest) para comparar.
                     base_url_respondeu = manifest_url.rsplit("/manifest", 1)[0]
                     self.current_index = next(
                         (i for i, s in enumerate(self.servers)
@@ -130,10 +114,6 @@ class StreamingClient:
     # ------------------------------------------------------------------
 
     def _try_failover(self) -> bool:
-        """
-        Percorre self.servers (lido do manifest) em ordem de prioridade,
-        pula o servidor atual e muda para o primeiro que passar no health check.
-        """
         for idx, server in enumerate(self.servers):
             if idx == self.current_index:
                 continue
@@ -153,14 +133,9 @@ class StreamingClient:
     # ------------------------------------------------------------------
 
     def download_segment(self, segment_url: str, expected_bytes: int = 0):
-        """
-        Baixa um segmento chunk a chunk com failover automático em caso de falha.
-
-        Retorna:
-            size_bytes, download_time_s, throughput_kbps,
-            jitter_network_ms, failover_happened
-        """
         failover_happened = False
+        # Marca o início de toda a operação (incluindo possíveis timeouts)
+        inicio_total = time.time()
 
         for _ in range(len(self.servers)):
             url = self.current_server_url.rstrip("/") + "/" + segment_url.lstrip("/")
@@ -168,7 +143,13 @@ class StreamingClient:
 
             if resultado is not None:
                 size, dl_time, tput, jitter = resultado
-                return size, dl_time, tput, jitter, failover_happened
+                # Tempo total real = desde o início até agora
+                # (captura timeout + health check + download efetivo)
+                tempo_total_real = time.time() - inicio_total
+                if tempo_total_real > dl_time + 0.1:
+                    print(f"[Cliente] ⏱ Tempo total da operação: {tempo_total_real:.2f}s "
+                          f"(inclui {tempo_total_real - dl_time:.2f}s de overhead/timeout)")
+                return size, tempo_total_real, tput, jitter, failover_happened
 
             print(f"[Cliente] Download falhou no servidor {self.current_server_id}. "
                   f"Tentando failover…")
@@ -176,16 +157,20 @@ class StreamingClient:
                 break
             failover_happened = True
 
-        print("[Cliente] Todos os servidores esgotados. Retornando segmento vazio.")
-        return 0, 0.0, 0.0, 0.0, failover_happened
+        # Mesmo em falha total, reporta o tempo gasto para o buffer descontar
+        tempo_total_real = time.time() - inicio_total
+        print(f"[Cliente] Todos os servidores esgotados após {tempo_total_real:.2f}s.")
+        return 0, tempo_total_real, 0.0, 0.0, failover_happened
 
     def _download_com_chunks(self, url: str, expected_bytes: int = 0):
         """
-        Lê a resposta em blocos de CHUNK_SIZE bytes, registrando o timestamp
-        de chegada de cada bloco para calcular o jitter_network_ms.
-
+        Lê a resposta em blocos de CHUNK_SIZE bytes.
         Retorna (size_bytes, download_time_s, throughput_kbps, jitter_ms)
         ou None em caso de erro.
+
+        O download_time_s retornado aqui é só o tempo do download bem-sucedido.
+        O tempo de timeout (quando o servidor não responde) é contabilizado
+        em download_segment() pelo tempo total da operação.
         """
         chunk_times = []
         total_bytes = 0
@@ -206,10 +191,12 @@ class StreamingClient:
                     chunk_times.append(time.time())
 
         except urllib.error.URLError as exc:
-            print(f"[Cliente] Erro de rede: {exc}")
+            elapsed = time.time() - start_time
+            print(f"[Cliente] Erro de rede após {elapsed:.1f}s: {exc}")
             return None
         except Exception as exc:
-            print(f"[Cliente] Erro inesperado: {exc}")
+            elapsed = time.time() - start_time
+            print(f"[Cliente] Erro inesperado após {elapsed:.1f}s: {exc}")
             return None
 
         if expected_bytes > 0 and total_bytes != expected_bytes:
