@@ -1,6 +1,6 @@
 class BufferBasedABR:
     """
-    Política 3.4: BBA Otimizado (Histerese Assimétrica + Safe Zone Estrita).
+    Política 2: BBA Otimizado (Histerese Assimétrica + Safe Zone Estrita).
     Saída de log formatada para manter o padrão original.
     """
 
