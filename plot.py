@@ -193,12 +193,12 @@ def generate_buffer_chart(csv_p1, csv_p2, output="buffer_chart.png"):
         ax.axvline(s, color="orange", linestyle=":", linewidth=1.5,
                    label=f"Failover (seg {s})")
 
-    ax.axhline(4,  color="red",    linestyle="--", alpha=0.5, linewidth=1.2,
-               label="Limiar emergência (4s)")
-    ax.axhline(8,  color="orange", linestyle="--", alpha=0.5, linewidth=1.2,
-               label="Limiar baixo (8s)")
-    ax.axhline(15, color="green",  linestyle="--", alpha=0.5, linewidth=1.2,
-               label="Limiar alto (15s)")
+    ax.axhline(2,  color="red",    linestyle="--", alpha=0.5, linewidth=1.2,
+               label="Limiar emergência (2s)")
+    ax.axhline(6,  color="orange", linestyle="--", alpha=0.5, linewidth=1.2,
+               label="Limiar baixo (6s)")
+    ax.axhline(12, color="green",  linestyle="--", alpha=0.5, linewidth=1.2,
+               label="Limiar alto (12s)")
 
     ax.set_title("Nível do Buffer ao Longo do Tempo", fontsize=13, fontweight="bold")
     ax.set_xlabel("Segmento", fontsize=11)
