@@ -1,5 +1,8 @@
 import csv
+import os
 import matplotlib.pyplot as plt
+
+CHARTS_DIR = "charts"
 
 def generate_throughput_quality_chart(csv_filename):
     segments = []
@@ -39,9 +42,11 @@ def generate_throughput_quality_chart(csv_filename):
     plt.legend(loc="upper left")
     plt.tight_layout()
 
-    plt.savefig("baseline_chart.png", dpi=300)
-    print("Chart saved as 'baseline_chart.png'!")
-    plt.show()
+    os.makedirs(CHARTS_DIR, exist_ok=True)
+    out = os.path.join(CHARTS_DIR, "baseline_chart.png")
+    plt.savefig(out, dpi=300)
+    plt.close()
+    print(f"Chart saved as '{out}'!")
 
 
 if __name__ == "__main__":
@@ -289,7 +294,12 @@ def generate_quality_distribution_chart(csv_p1, csv_p2, output="quality_dist_cha
 
 def generate_all_charts(csv_p1="streaming_metrics_p1.csv",
                         csv_p2="streaming_metrics_p2.csv"):
-    generate_comparison_chart(csv_p1, csv_p2)
-    generate_buffer_chart(csv_p1, csv_p2)
-    generate_jitter_chart(csv_p1, csv_p2)
-    generate_quality_distribution_chart(csv_p1, csv_p2)
+    os.makedirs(CHARTS_DIR, exist_ok=True)
+    generate_comparison_chart(csv_p1, csv_p2,
+                              output=os.path.join(CHARTS_DIR, "comparison_chart.png"))
+    generate_buffer_chart(csv_p1, csv_p2,
+                          output=os.path.join(CHARTS_DIR, "buffer_chart.png"))
+    generate_jitter_chart(csv_p1, csv_p2,
+                          output=os.path.join(CHARTS_DIR, "jitter_chart.png"))
+    generate_quality_distribution_chart(csv_p1, csv_p2,
+                                        output=os.path.join(CHARTS_DIR, "quality_dist_chart.png"))
