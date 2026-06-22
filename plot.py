@@ -97,56 +97,58 @@ def _rebuffer_segs(data_dict):
 QUALITY_ORDER = {"240p": 0, "360p": 1, "480p": 2, "720p": 3, "1080p": 4}
 ALL_QUALITIES = ["240p", "360p", "480p", "720p", "1080p"]
 
+POLICY_COLORS   = ["steelblue", "seagreen", "darkorange", "mediumpurple", "crimson"]
+POLICY_MARKERS  = ["o", "s", "^", "D", "v"]
+FAILOVER_COLORS = ["red", "purple", "brown", "teal"]
 
-def generate_comparison_chart(csv_p1, csv_p2, output="comparison_chart.png"):
-    """Gráfico sobreposto: throughput e qualidade de P1 vs P2."""
+
+def generate_comparison_chart(csv_paths: dict, output="comparison_chart.png"):
+    """Gráfico sobreposto: throughput e qualidade de N políticas."""
     cols = ["segment", "throughput_kbps", "bitrate_kbps", "quality", "rebuffer_event"]
-    d1 = _load_csv_columns(csv_p1, *cols)
-    d2 = _load_csv_columns(csv_p2, *cols)
+    data = {label: _load_csv_columns(path, *cols) for label, path in csv_paths.items()}
+    data = {l: d for l, d in data.items() if d["segment"]}
 
-    if not d1["segment"] or not d2["segment"]:
+    if not data:
         print("[plot] Dados insuficientes para comparison_chart.")
         return
 
-    segs1 = [int(x) for x in d1["segment"]]
-    segs2 = [int(x) for x in d2["segment"]]
-    tput1 = [float(x) for x in d1["throughput_kbps"]]
-    tput2 = [float(x) for x in d2["throughput_kbps"]]
-    br1   = [float(x) for x in d1["bitrate_kbps"]]
-    br2   = [float(x) for x in d2["bitrate_kbps"]]
-
-    rb1 = _rebuffer_segs(d1)
-    rb2 = _rebuffer_segs(d2)
-    fo2 = _failover_segs(csv_p2)
+    # Mapeamento resolução → índice numérico para o eixo Y
+    quality_to_idx = {q: i for i, q in enumerate(ALL_QUALITIES)}
 
     _, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
-    ax1.plot(segs1, tput1, color="steelblue", linestyle="--",
-             linewidth=1.5, label="Throughput P1")
-    ax1.plot(segs2, tput2, color="seagreen", linestyle="--",
-             linewidth=1.5, label="Throughput P2")
-    for s in rb1 + rb2:
-        ax1.axvline(s, color="red", alpha=0.4, linewidth=1)
-    for s in fo2:
-        ax1.axvline(s, color="orange", linestyle=":", linewidth=1.5)
+    for i, (label, d) in enumerate(data.items()):
+        color = POLICY_COLORS[i % len(POLICY_COLORS)]
+        segs  = [int(x) for x in d["segment"]]
+        tput  = [float(x) for x in d["throughput_kbps"]]
+        qual  = [quality_to_idx.get(q, 0) for q in d["quality"]]
+        rb    = _rebuffer_segs(d)
+        fo    = _failover_segs(csv_paths[label])
+
+        ax1.plot(segs, tput, color=color, linestyle="--", linewidth=1.5,
+                 label=f"Throughput {label}")
+        for s in rb:
+            ax1.axvline(s, color="red", alpha=0.3, linewidth=1)
+        for s in fo:
+            ax1.axvline(s, color="orange", linestyle=":", linewidth=1.5)
+
+        ax2.step(segs, qual, color=color, linewidth=2.5, where="mid",
+                 label=f"Qualidade {label}")
+        for s in rb:
+            ax2.axvline(s, color="red", alpha=0.3, linewidth=1)
+        for s in fo:
+            ax2.axvline(s, color="orange", linestyle=":", linewidth=1.5,
+                        label=f"Failover {label} (seg {s})")
+
     ax1.set_ylabel("Throughput (kbps)", fontsize=11)
     ax1.legend(loc="upper right", fontsize=9)
     ax1.grid(True, linestyle=":", alpha=0.6)
-    ax1.set_title("Comparação P1 (Rate-Based) vs P2 (Buffer-Based)", fontsize=13, fontweight="bold")
+    ax1.set_title(f"Comparação {' vs '.join(data.keys())}", fontsize=13, fontweight="bold")
 
-    ax2.step(segs1, br1, color="darkorange", linewidth=2.5,
-             where="mid", label="Qualidade P1 (bitrate)")
-    ax2.step(segs2, br2, color="mediumpurple", linewidth=2.5,
-             where="mid", label="Qualidade P2 (bitrate)")
-    for s in rb1:
-        ax2.axvline(s, color="red", alpha=0.4, linewidth=1, label="Rebuffer P1" if s == rb1[0] else "")
-    for s in rb2:
-        ax2.axvline(s, color="tomato", alpha=0.4, linewidth=1)
-    for s in fo2:
-        ax2.axvline(s, color="orange", linestyle=":", linewidth=1.5,
-                    label=f"Failover (seg {s})")
     ax2.set_xlabel("Segmento", fontsize=11)
-    ax2.set_ylabel("Bitrate nominal (kbps)", fontsize=11)
+    ax2.set_ylabel("Resolução", fontsize=11)
+    ax2.set_yticks(range(len(ALL_QUALITIES)))
+    ax2.set_yticklabels(ALL_QUALITIES)
     ax2.legend(loc="upper right", fontsize=9)
     ax2.grid(True, linestyle=":", alpha=0.6)
 
@@ -156,49 +158,36 @@ def generate_comparison_chart(csv_p1, csv_p2, output="comparison_chart.png"):
     print(f"[plot] Salvo: {output}")
 
 
-def generate_buffer_chart(csv_p1, csv_p2, output="buffer_chart.png"):
-    """Nível do buffer P1 vs P2 com marcadores de rebuffer e limiares."""
+def generate_buffer_chart(csv_paths: dict, output="buffer_chart.png"):
+    """Nível do buffer de N políticas com marcadores de rebuffer e limiares."""
     cols = ["segment", "buffer_level_s", "rebuffer_event"]
-    d1 = _load_csv_columns(csv_p1, *cols)
-    d2 = _load_csv_columns(csv_p2, *cols)
+    data = {label: _load_csv_columns(path, *cols) for label, path in csv_paths.items()}
+    data = {l: d for l, d in data.items() if d["segment"]}
 
-    if not d1["segment"] or not d2["segment"]:
+    if not data:
         print("[plot] Dados insuficientes para buffer_chart.")
         return
 
-    segs1  = [int(x) for x in d1["segment"]]
-    segs2  = [int(x) for x in d2["segment"]]
-    buf1   = [float(x) for x in d1["buffer_level_s"]]
-    buf2   = [float(x) for x in d2["buffer_level_s"]]
-    rb1    = _rebuffer_segs(d1)
-    rb2    = _rebuffer_segs(d2)
-    fo2    = _failover_segs(csv_p2)
-
     _, ax = plt.subplots(figsize=(11, 5))
 
-    ax.plot(segs1, buf1, color="steelblue", linewidth=2, marker="o",
-            markersize=4, label="Buffer P1 (Rate-Based)")
-    ax.plot(segs2, buf2, color="seagreen", linewidth=2, marker="s",
-            markersize=4, label="Buffer P2 (Buffer-Based)")
+    for i, (label, d) in enumerate(data.items()):
+        color  = POLICY_COLORS[i % len(POLICY_COLORS)]
+        marker = POLICY_MARKERS[i % len(POLICY_MARKERS)]
+        segs   = [int(x) for x in d["segment"]]
+        buf    = [float(x) for x in d["buffer_level_s"]]
+        rb     = _rebuffer_segs(d)
+        fo     = _failover_segs(csv_paths[label])
 
-    for s in rb1:
-        idx = segs1.index(s)
-        ax.annotate("▼", (s, buf1[idx]), color="red", fontsize=12,
-                    ha="center", va="top")
-    for s in rb2:
-        idx = segs2.index(s)
-        ax.annotate("▼", (s, buf2[idx]), color="tomato", fontsize=12,
-                    ha="center", va="top")
-    for s in fo2:
-        ax.axvline(s, color="orange", linestyle=":", linewidth=1.5,
-                   label=f"Failover (seg {s})")
-
-    ax.axhline(2,  color="red",    linestyle="--", alpha=0.5, linewidth=1.2,
-               label="Limiar emergência (2s)")
-    ax.axhline(6,  color="orange", linestyle="--", alpha=0.5, linewidth=1.2,
-               label="Limiar baixo (6s)")
-    ax.axhline(12, color="green",  linestyle="--", alpha=0.5, linewidth=1.2,
-               label="Limiar alto (12s)")
+        ax.plot(segs, buf, color=color, linewidth=2, marker=marker,
+                markersize=4, label=f"Buffer {label}")
+        for s in rb:
+            idx = segs.index(s)
+            ax.annotate("▼", (s, buf[idx]), color=color, fontsize=12,
+                        ha="center", va="top")
+        for j, s in enumerate(fo):
+            fo_color = FAILOVER_COLORS[j % len(FAILOVER_COLORS)]
+            ax.axvline(s, color=fo_color, linestyle=":", linewidth=1.5,
+                       label=f"Failover {label} (seg {s})")
 
     ax.set_title("Nível do Buffer ao Longo do Tempo", fontsize=13, fontweight="bold")
     ax.set_xlabel("Segmento", fontsize=11)
@@ -211,31 +200,28 @@ def generate_buffer_chart(csv_p1, csv_p2, output="buffer_chart.png"):
     print(f"[plot] Salvo: {output}")
 
 
-def generate_jitter_chart(csv_p1, csv_p2, output="jitter_chart.png"):
-    """EWMA do jitter P1 vs P2 sobrepostos."""
+def generate_jitter_chart(csv_paths: dict, output="jitter_chart.png"):
+    """EWMA do jitter de N políticas sobrepostos."""
     cols = ["segment", "jitter_ewma_ms"]
-    d1 = _load_csv_columns(csv_p1, *cols)
-    d2 = _load_csv_columns(csv_p2, *cols)
+    data = {label: _load_csv_columns(path, *cols) for label, path in csv_paths.items()}
+    data = {l: d for l, d in data.items() if d["segment"]}
 
-    if not d1["segment"] or not d2["segment"]:
+    if not data:
         print("[plot] Dados insuficientes para jitter_chart.")
         return
 
-    segs1 = [int(x) for x in d1["segment"]]
-    segs2 = [int(x) for x in d2["segment"]]
-    j1    = [float(x) for x in d1["jitter_ewma_ms"]]
-    j2    = [float(x) for x in d2["jitter_ewma_ms"]]
-
-    avg1 = round(sum(j1) / len(j1), 2) if j1 else 0
-    avg2 = round(sum(j2) / len(j2), 2) if j2 else 0
-
     fig, ax = plt.subplots(figsize=(11, 4))
-    ax.plot(segs1, j1, color="steelblue", linewidth=2, marker="o", markersize=4,
-            label=f"Jitter EWMA P1  (média {avg1} ms)")
-    ax.plot(segs2, j2, color="seagreen", linewidth=2, marker="s", markersize=4,
-            label=f"Jitter EWMA P2  (média {avg2} ms)")
+    for i, (label, d) in enumerate(data.items()):
+        color  = POLICY_COLORS[i % len(POLICY_COLORS)]
+        marker = POLICY_MARKERS[i % len(POLICY_MARKERS)]
+        segs   = [int(x) for x in d["segment"]]
+        j      = [float(x) for x in d["jitter_ewma_ms"]]
+        avg    = round(sum(j) / len(j), 2) if j else 0
+        ax.plot(segs, j, color=color, linewidth=2, marker=marker, markersize=4,
+                label=f"Jitter EWMA {label}  (média {avg} ms)")
 
-    ax.set_title("Variação de Atraso (Jitter EWMA) — P1 vs P2", fontsize=13, fontweight="bold")
+    ax.set_title(f"Variação de Atraso (Jitter EWMA) — {' vs '.join(data.keys())}",
+                 fontsize=13, fontweight="bold")
     ax.set_xlabel("Segmento", fontsize=11)
     ax.set_ylabel("Jitter EWMA (ms)", fontsize=11)
     ax.legend(loc="upper right", fontsize=10)
@@ -246,8 +232,8 @@ def generate_jitter_chart(csv_p1, csv_p2, output="jitter_chart.png"):
     print(f"[plot] Salvo: {output}")
 
 
-def generate_quality_distribution_chart(csv_p1, csv_p2, output="quality_dist_chart.png"):
-    """Barras agrupadas: % de tempo em cada nível de qualidade P1 vs P2."""
+def generate_quality_distribution_chart(csv_paths: dict, output="quality_dist_chart.png"):
+    """Barras agrupadas: % de tempo em cada nível de qualidade para N políticas."""
     def get_dist(path):
         counts = {q: 0 for q in ALL_QUALITIES}
         total  = 0
@@ -262,23 +248,23 @@ def generate_quality_distribution_chart(csv_p1, csv_p2, output="quality_dist_cha
             pass
         return {q: round(counts[q] / total * 100, 1) if total else 0 for q in ALL_QUALITIES}
 
-    dist1 = get_dist(csv_p1)
-    dist2 = get_dist(csv_p2)
+    dists = {label: get_dist(path) for label, path in csv_paths.items()}
 
     import numpy as np
     x     = np.arange(len(ALL_QUALITIES))
-    width = 0.35
+    n     = len(dists)
+    width = 0.8 / n
 
     _, ax = plt.subplots(figsize=(9, 5))
-    bars1 = ax.bar(x - width/2, [dist1[q] for q in ALL_QUALITIES], width,
-                   label="P1 (Rate-Based)", color="steelblue", alpha=0.85)
-    bars2 = ax.bar(x + width/2, [dist2[q] for q in ALL_QUALITIES], width,
-                   label="P2 (Buffer-Based)", color="seagreen", alpha=0.85)
+    for i, (label, dist) in enumerate(dists.items()):
+        offset = (i - (n - 1) / 2) * width
+        color  = POLICY_COLORS[i % len(POLICY_COLORS)]
+        bars   = ax.bar(x + offset, [dist[q] for q in ALL_QUALITIES], width,
+                        label=label, color=color, alpha=0.85)
+        ax.bar_label(bars, fmt="%.1f%%", padding=2, fontsize=8)
 
-    ax.bar_label(bars1, fmt="%.1f%%", padding=2, fontsize=9)
-    ax.bar_label(bars2, fmt="%.1f%%", padding=2, fontsize=9)
-
-    ax.set_title("Distribuição de Qualidade Selecionada — P1 vs P2", fontsize=13, fontweight="bold")
+    ax.set_title(f"Distribuição de Qualidade Selecionada — {' vs '.join(dists.keys())}",
+                 fontsize=13, fontweight="bold")
     ax.set_xlabel("Nível de Qualidade", fontsize=11)
     ax.set_ylabel("% do tempo", fontsize=11)
     ax.set_xticks(x)
@@ -292,14 +278,21 @@ def generate_quality_distribution_chart(csv_p1, csv_p2, output="quality_dist_cha
     print(f"[plot] Salvo: {output}")
 
 
-def generate_all_charts(csv_p1="streaming_metrics_p1.csv",
-                        csv_p2="streaming_metrics_p2.csv"):
+def generate_all_charts(csv_paths: dict = None):
+    """csv_paths: {label: caminho_csv} — ex: {'P1': 'streaming_metrics_p1.csv', ...}"""
+    if csv_paths is None:
+        csv_paths = {
+            "P1": "streaming_metrics_p1.csv",
+            "P2": "streaming_metrics_p2.csv",
+            "P3": "streaming_metrics_p3.csv",
+        }
+    csv_paths = {l: p for l, p in csv_paths.items() if os.path.exists(p)}
     os.makedirs(CHARTS_DIR, exist_ok=True)
-    generate_comparison_chart(csv_p1, csv_p2,
+    generate_comparison_chart(csv_paths,
                               output=os.path.join(CHARTS_DIR, "comparison_chart.png"))
-    generate_buffer_chart(csv_p1, csv_p2,
+    generate_buffer_chart(csv_paths,
                           output=os.path.join(CHARTS_DIR, "buffer_chart.png"))
-    generate_jitter_chart(csv_p1, csv_p2,
+    generate_jitter_chart(csv_paths,
                           output=os.path.join(CHARTS_DIR, "jitter_chart.png"))
-    generate_quality_distribution_chart(csv_p1, csv_p2,
+    generate_quality_distribution_chart(csv_paths,
                                         output=os.path.join(CHARTS_DIR, "quality_dist_chart.png"))

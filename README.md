@@ -1,261 +1,366 @@
-# Cliente de Streaming Adaptativo (ABR)
+# Streaming Adaptativo ABR — Trabalho Final TR2
 
-Uma simulação em Python de um cliente de streaming ABR (Adaptive Bitrate). O cliente baixa segmentos de vídeo de um servidor, ajustando dinamicamente o nível de qualidade com base nas condições da rede em tempo real, enquanto rastreia o estado do buffer e registra métricas de desempenho.
-
----
-
-## Estrutura do Projeto
-
-```
-├── main.py             # Ponto de entrada — orquestra o loop completo de streaming
-├── client.py           # Cliente HTTP para buscar o manifest e baixar segmentos
-├── abr.py              # Algoritmo ABR — decide o nível de qualidade de cada segmento
-├── buffer_manager.py   # Simula o buffer de reprodução do vídeo
-├── metrics.py          # Registra métricas por segmento em um arquivo CSV
-└── plot.py             # Gera um gráfico a partir dos dados do CSV
-```
+Simulação de um cliente de streaming adaptativo (ABR) sobre HTTP, implementando três políticas de seleção de qualidade, failover automático entre servidores e análise comparativa de desempenho.
 
 ---
 
-## Como Funciona
+## Sumário
 
-O cliente simula o que um player de vídeo real faz durante o streaming: ele baixa segmentos de vídeo continuamente, um por um, decidindo em tempo real se deve transmitir em alta qualidade (quando a conexão está rápida) ou reduzir para uma qualidade menor (quando a conexão está lenta), tudo isso tentando evitar que o buffer se esgote e cause travamentos.
-
-### Fluxo Passo a Passo
-
-```
-1. Buscar manifest       → descobrir as qualidades disponíveis e a URL do servidor
-2. Para cada segmento:
-   a. ABR decide a qualidade → baseado na vazão medida recentemente
-   b. Baixar segmento         → medir tempo de download e vazão real
-   c. Atualizar histórico ABR → registrar a nova vazão na janela deslizante
-   d. Atualizar buffer        → simular a variação do nível do buffer
-   e. Registrar métricas      → gravar uma linha no CSV
-3. Gerar gráfico         → visualizar vazão vs. qualidade ao longo do tempo
-```
-
----
-
-## Módulos em Detalhe
-
-### `main.py` — Orquestrador
-
-O ponto de entrada do projeto. Instancia todos os componentes e executa o loop de download dos segmentos.
-
-**Constantes principais:**
-| Constante | Valor | Descrição |
-|---|---|---|
-| `MANIFEST_URL` | `http://…:8080/manifest` | Endereço do manifest no servidor de streaming |
-| `TOTAL_SEGMENTS` | `10` | Número de segmentos a serem baixados |
-| `SEGMENT_DURATION_S` | lido do manifest (padrão `2.0`) | Duração de cada segmento de vídeo em segundos |
-
-**Lógica do loop por segmento:**
-1. Pedir ao ABR a melhor qualidade → `abr.get_next_quality()`
-2. Localizar a URL de download dessa qualidade no manifest
-3. Baixar o segmento → `client.download_segment(segment_url)`
-4. Informar a vazão medida ao ABR → `abr.record_throughput()`
-5. Atualizar a simulação do buffer → `buffer.update_buffer()`
-6. Gravar todas as métricas do segmento no CSV → `logger.log_segment()`
+- [Visão Geral](#visão-geral)
+- [Arquitetura](#arquitetura)
+- [Como Rodar](#como-rodar)
+- [Políticas ABR](#políticas-abr)
+  - [Política 1 — Rate-Based](#política-1--rate-based)
+  - [Política 2 — Buffer-Based](#política-2--buffer-based)
+  - [Política 3 — EWMA com Penalidade de Jitter](#política-3--ewma-com-penalidade-de-jitter)
+- [Infraestrutura](#infraestrutura)
+  - [Buffer Manager](#buffer-manager)
+  - [Cliente e Failover](#cliente-e-failover)
+  - [Métricas CSV](#métricas-csv)
+- [Análise e Gráficos](#análise-e-gráficos)
+- [Estrutura de Arquivos](#estrutura-de-arquivos)
 
 ---
 
-### `client.py` — Cliente HTTP (`StreamingClient`)
+## Visão Geral
 
-Responsável por toda comunicação de rede, usando o módulo `urllib` da biblioteca padrão do Python.
+O projeto simula um player de vídeo que baixa segmentos de 2 segundos a partir de um servidor HTTP. A cada segmento, a política ABR decide qual resolução baixar com base nas condições de rede e/ou nível do buffer. O sistema suporta dois servidores (A e B) com failover automático quando o servidor primário falha.
 
-#### `fetch_manifest()`
-Faz uma requisição GET para a `MANIFEST_URL` e interpreta a resposta JSON. O manifest descreve as representações de qualidade disponíveis e a URL base do servidor. Estrutura esperada:
+**Resoluções disponíveis:**
 
-```json
-{
-  "segment_duration_s": 2.0,
-  "servers": [{ "url": "http://....:8080" }],
-  "representations": [
-    { "quality": "1080p", "bitrate_kbps": 4500, "url_path": "/segment/1080p" },
-    { "quality": "720p",  "bitrate_kbps": 2500, "url_path": "/segment/720p"  },
-    { "quality": "480p",  "bitrate_kbps": 1000, "url_path": "/segment/480p"  },
-    { "quality": "240p",  "bitrate_kbps": 400,  "url_path": "/segment/240p"  }
-  ]
-}
-```
-
-#### `download_segment(segment_url)`
-Baixa um segmento e mede o desempenho da rede:
-
-```
-vazão (kbps) = (tamanho_bytes × 8 / 1000) / tempo_download_s
-```
-
-Um valor mínimo de `0.001s` é aplicado ao `download_time_s` para evitar divisão por zero em conexões locais extremamente rápidas.
-
-Retorna `(size_bytes, download_time_s, throughput_kbps)`.
+| Qualidade | Bitrate nominal |
+|-----------|----------------|
+| 240p      | 200 kbps       |
+| 360p      | 400 kbps       |
+| 480p      | 600 kbps       |
+| 720p      | 900 kbps       |
+| 1080p     | 1200 kbps      |
 
 ---
 
-### `abr.py` — Algoritmo de Bitrate Adaptativo (`RateBasedABR`)
-
-Implementa um algoritmo **ABR Baseado em Taxa (Rate-Based)**. O objetivo é sempre escolher a maior qualidade cujo bitrate caiba confortavelmente dentro da capacidade de rede estimada.
-
-#### Parâmetros
-| Parâmetro | Padrão | Descrição |
-|---|---|---|
-| `safety_factor` | `0.8` | Multiplicador aplicado à vazão média para criar uma margem de segurança (80%) |
-| `window_size` | `3` | Número de segmentos recentes mantidos no histórico de vazão |
-
-#### `record_throughput(throughput_kbps)`
-Adiciona a medição mais recente a uma janela deslizante. Quando a janela ultrapassa `window_size`, a entrada mais antiga é descartada. Isso faz com que o ABR reaja rapidamente a mudanças na rede sem ser impactado por um único valor atípico.
-
-#### `get_next_quality()`
-Lógica de decisão:
+## Arquitetura
 
 ```
-1. Se não há histórico → retornar a menor qualidade (padrão seguro)
-2. Calcular a média da janela deslizante
-3. Aplicar a margem de segurança:  vazão_segura = média × safety_factor
-4. Iterar os níveis de qualidade do maior para o menor bitrate
-5. Retornar o primeiro nível cujo bitrate_kbps ≤ vazão_segura
-6. Se nenhum couber → retornar a menor qualidade (último recurso)
+main.py               ← orquestrador principal
+├── client.py         ← download HTTP, health check, failover
+├── abr.py            ← Política 1: Rate-Based
+├── abr_v2.py         ← Política 2: Buffer-Based
+├── abr_v3.py         ← Política 3: EWMA + Jitter
+├── buffer_manager.py ← simulação do buffer do player
+├── metrics.py        ← gravação do CSV por segmento
+├── analysis.py       ← análise estatística dos CSVs
+└── plot.py           ← geração dos gráficos comparativos
 ```
 
-O fator de segurança (0.8) significa que o algoritmo só escolhe uma qualidade cujo bitrate utiliza no máximo 80% da capacidade estimada, deixando margem para flutuações na vazão.
+Todas as políticas expõem a mesma interface, permitindo que o `main.py` as use de forma intercambiável:
 
-**Exemplo:**
-
-```
-Vazão recente:   [3000, 2800, 3200] kbps
-Média:           3000 kbps
-Vazão segura:    2400 kbps  (3000 × 0.8)
-Qualidade:       720p requer 2500 kbps? Não. 480p requer 1000 kbps? Sim → 480p
+```python
+abr.record_throughput(throughput_kbps, jitter_ms)  # registra medição após download
+abr.get_next_quality(buffer_level_s)               # retorna resolução para o próximo segmento
 ```
 
 ---
 
-### `buffer_manager.py` — Simulação de Buffer (`BufferManager`)
+## Como Rodar
 
-Modela o buffer de reprodução — o estoque de conteúdo pré-baixado que mantém o player rodando sem interrupções mesmo que a rede sofra instabilidades momentâneas.
-
-#### Estado
-| Atributo | Descrição |
-|---|---|
-| `buffer_level_s` | Profundidade atual do buffer em segundos de vídeo |
-| `total_rebuffer_events` | Total de travamentos ocorridos durante a sessão |
-| `total_stall_duration_s` | Tempo total acumulado de congelamento em segundos |
-
-#### `update_buffer(download_time_s, segment_duration_s)`
-
-O núcleo da simulação. Modela dois eventos simultâneos que acontecem a cada download:
-
-```
-Fase 1 — Consumo:
-  Enquanto o download leva download_time_s, o player continua reproduzindo.
-  buffer_level -= download_time_s
-
-Fase 2 — Verificação de travamento:
-  Se buffer_level < 0:
-    → O vídeo travou. stall_duration = abs(buffer_level)
-    → buffer_level é redefinido para 0
-
-Fase 3 — Reabastecimento:
-  O download terminou. O novo conteúdo é adicionado ao buffer.
-  buffer_level += segment_duration_s
-```
-
-Retorna `(buffer_can_play, rebuffer_event, stall_duration_s)`.
-
-**Cenário A — Rede rápida (sem travamento):**
-```
-buffer antes:    4.0s
-download:        0.5s  → buffer cai para 3.5s  (sem travamento)
-segmento add:    2.0s  → buffer sobe para 5.5s
-```
-
-**Cenário B — Rede lenta (com travamento):**
-```
-buffer antes:    1.0s
-download:        3.0s  → buffer cai para -2.0s  (travou por 2.0s!)
-stall_duration:  2.0s, buffer redefinido para 0.0s
-segmento add:    2.0s  → buffer sobe para 2.0s
-```
-
----
-
-### `metrics.py` — Logger CSV (`MetricsLogger`)
-
-Grava uma linha por segmento em `streaming_metrics.csv`. O arquivo é (re)criado do zero toda vez que o cliente inicia.
-
-#### Colunas do CSV
-
-| Coluna | Tipo | Descrição |
-|---|---|---|
-| `segment` | int | Número de sequência do segmento (1, 2, 3, …) |
-| `timestamp` | string ISO 8601 | Horário de relógio quando o segmento foi registrado |
-| `server_id` | string | Identificador do servidor (padrão `"A"`) |
-| `quality` | string | Rótulo de qualidade escolhido pelo ABR (ex: `"720p"`) |
-| `bitrate_kbps` | int | Bitrate nominal da qualidade escolhida |
-| `throughput_kbps` | float | Vazão de rede real medida |
-| `download_time_s` | float | Tempo gasto para baixar o segmento |
-| `jitter_network_ms` | float | Jitter de rede por segmento (reservado, padrão `0`) |
-| `jitter_ewma_ms` | float | Jitter suavizado por EWMA (reservado, padrão `0`) |
-| `buffer_level_s` | float | Nível do buffer após o processamento do segmento |
-| `buffer_can_play` | int | `1` se a reprodução foi contínua, `0` se travou |
-| `rebuffer_event` | int | `1` se houve travamento neste segmento |
-| `stall_duration_s` | float | Duração do travamento em segundos (`0` se não houve) |
-| `failover_total` | int | Número de failovers de servidor (reservado, padrão `0`) |
-
----
-
-### `plot.py` — Gerador de Gráfico
-
-Lê `streaming_metrics.csv` e produz um gráfico de duas linhas salvo como `baseline_chart.png`.
-
-- **Linha azul tracejada** — vazão de rede real por segmento
-- **Linha laranja em degrau** — nível de qualidade (bitrate) escolhido pelo ABR por segmento
-- **Rótulos** — nome da qualidade (ex: `480p`) anotado acima de cada ponto laranja
-
-O gráfico em degrau (`plt.step`) é intencional: a qualidade não sobe em rampa — ela muda abruptamente de um nível para outro entre segmentos.
-
----
-
-## Arquivos de Saída
-
-| Arquivo | Gerado por | Descrição |
-|---|---|---|
-| `streaming_metrics.csv` | `MetricsLogger` | Log de desempenho por segmento |
-| `baseline_chart.png` | `plot.py` | Visualização de vazão vs. qualidade |
-
----
-
-## Como Executar
+### Pré-requisitos
 
 ```bash
-python main.py
+pip install matplotlib numpy
 ```
 
-Isso irá:
-1. Buscar o manifest no servidor
-2. Baixar 10 segmentos, imprimindo o progresso no terminal
-3. Salvar `streaming_metrics.csv`
-4. Gerar e exibir `baseline_chart.png`
-
-Para regenerar o gráfico a partir de um CSV existente sem re-baixar os segmentos:
+### Executar uma política
 
 ```bash
-python plot.py
+python main.py --politica 1 --segmentos 30   # Rate-Based
+python main.py --politica 2 --segmentos 30   # Buffer-Based
+python main.py --politica 3 --segmentos 30   # EWMA + Jitter
+```
+
+Os aliases `--policy` e `--segments` também funcionam.
+
+### Gerar análise comparativa
+
+Após rodar as três políticas, execute:
+
+```bash
+python analysis.py
+```
+
+Ou especificando os arquivos CSV diretamente:
+
+```bash
+python analysis.py --p1 streaming_metrics_p1.csv \
+                   --p2 streaming_metrics_p2.csv \
+                   --p3 streaming_metrics_p3.csv
+```
+
+A análise imprime uma tabela com todas as métricas e salva os quatro gráficos em `charts/`.
+
+---
+
+## Políticas ABR
+
+### Política 1 — Rate-Based
+
+**Arquivo:** `abr.py`
+
+A política mais simples. Mantém uma janela deslizante das últimas 3 medições de throughput e aplica um fator de segurança fixo de 0.8:
+
+```
+estimativa = média(últimas 3 medições) × 0.8
+```
+
+Seleciona a maior qualidade cujo bitrate cabe na estimativa. Não usa o nível do buffer para tomar decisões de qualidade — o buffer é gerenciado apenas pelo `BufferManager`.
+
+**Características:**
+- Simples e previsível
+- Reage com atraso de até 3 segmentos a mudanças de rede
+- O fator fixo de 0.8 tende a subestimar a capacidade real da rede, mantendo qualidade conservadora mesmo em redes estáveis
+
+---
+
+### Política 2 — Buffer-Based
+
+**Arquivo:** `abr_v2.py`
+
+Ignora completamente a vazão de rede. Decide a qualidade exclusivamente pelo nível atual do buffer via interpolação linear:
+
+```
+razão        = (buffer − 2s) / (12s − 2s)
+bitrate_alvo = 200 + razão × (1200 − 200)  kbps
+```
+
+| Buffer  | Bitrate alvo | Qualidade típica  |
+|---------|-------------|-------------------|
+| ≤ 2s    | 200 kbps    | 240p (emergência) |
+| 4s      | 400 kbps    | 360p              |
+| 7s      | 700 kbps    | 480p              |
+| 10s     | 1000 kbps   | 720p              |
+| ≥ 12s   | 1200 kbps   | 1080p             |
+
+**Histerese assimétrica** evita oscilações de qualidade:
+- **Subir:** 1 confirmação consecutiva
+- **Descer:** 2 confirmações consecutivas E buffer < 6s — com buffer confortável, descidas são bloqueadas
+
+**Características:**
+- Estável após o buffer encher — resistente a picos de jitter
+- Rampa de subida lenta: precisa que o buffer alcance 12s para liberar 1080p (tipicamente 9+ segmentos)
+- Não usa nenhuma informação de rede — ignora completamente o throughput medido
+
+---
+
+### Política 3 — EWMA com Penalidade de Jitter
+
+**Arquivo:** `abr_v3.py`
+
+Política híbrida que combina estimativa estatística de rede com consciência do estado do buffer. Implementa dois componentes analíticos obrigatórios da Tarefa 3.
+
+#### Componente 1 — EWMA de Vazão (componente estatístico)
+
+Média Móvel Exponencial com α = 0.4:
+
+```
+EWMA_nova = 0.4 × throughput_atual + 0.6 × EWMA_anterior
+```
+
+Diferente da média simples da P1, a EWMA dá peso exponencialmente decrescente às amostras antigas. Com α = 0.4, os pesos implícitos são:
+
+| Segmento | Peso  |
+|----------|-------|
+| atual    | 40%   |
+| -1       | 24%   |
+| -2       | 14%   |
+| -3       | 9%    |
+| ...      | ...   |
+
+Isso faz a estimativa reagir mais rápido a mudanças reais de rede, sem supervalorizar picos pontuais como faria uma leitura instantânea. A estimativa de capacidade é:
+
+```
+estimativa = EWMA × FATOR_SEGURANCA (0.99)
+```
+
+#### Componente 2 — Penalidade de Jitter (tratamento explícito de variação de atraso)
+
+Jitter é o desvio padrão dos intervalos entre chegadas de chunks dentro de um segmento. Jitter alto indica entrega irregular: mesmo que o throughput médio pareça suficiente, os chunks chegam de forma errática — o que pode esgotar o buffer entre chegadas mesmo sem queda de bandwidth.
+
+A penalidade só atua quando **buffer < 6s**, que é o cenário de risco imediato:
+
+```
+excesso  = max(0, jitter_EWMA − 25ms)
+multiplo = excesso / 25ms
+fator    = max(0.70, FATOR_SEGURANCA − multiplo × 0.10)
+```
+
+Com buffer alto (≥ 6s), a penalidade é desativada — o buffer absorve a irregularidade de entrega sem necessidade de reduzir qualidade.
+
+Exemplos práticos:
+
+| Jitter EWMA | Buffer | Fator efetivo | Efeito              |
+|-------------|--------|---------------|---------------------|
+| 15ms        | 3s     | 0.99          | Sem penalidade       |
+| 50ms (2×)   | 3s     | 0.89          | Estimativa −10%      |
+| 100ms (4×)  | 3s     | 0.70          | Estimativa −29% (piso) |
+| 200ms       | 8s     | 0.99          | Buffer alto, sem penalidade |
+
+#### Componente 3 — Bônus de Buffer
+
+Com buffer ≥ 10s, a política sugere um nível de qualidade acima do que a estimativa autorizaria. A lógica é que o buffer acumulado serve de margem de segurança — se o próximo segmento demorar mais que o esperado, o player tem reserva suficiente para absorver sem causar rebuffer:
+
+```
+if buffer >= 10s:
+    idx_sugerido = idx_atual + 1  # tenta um nível acima
+```
+
+A histerese confirma a subida antes de aplicar (evita oscilações).
+
+#### Histerese
+
+- Tolerância = 2 para subir e descer
+- Descidas adicionalmente bloqueadas quando buffer ≥ 6s
+
+**Fluxo de decisão por segmento:**
+
+```
+1. buffer < 2s?        → 240p imediato (emergência)
+2. Atualiza EWMA de vazão e jitter
+3. buffer < 6s?        → calcula penalidade de jitter no fator
+4. estimativa          = EWMA × fator
+5. Seleciona melhor qualidade dentro da estimativa
+6. buffer >= 10s?      → sugere um nível acima (bônus)
+7. Histerese           → confirma subida/descida (tolerância 2)
 ```
 
 ---
 
-## Dependências
+## Infraestrutura
 
-| Biblioteca | Usada em | Finalidade |
-|---|---|---|
-| `urllib` | `client.py` | Requisições HTTP (biblioteca padrão) |
-| `csv` | `metrics.py`, `plot.py` | Leitura/escrita de CSV (biblioteca padrão) |
-| `datetime` | `metrics.py` | Timestamps ISO 8601 (biblioteca padrão) |
-| `matplotlib` | `plot.py` | Geração de gráficos (terceiro) |
+### Buffer Manager
 
-Instalar dependências de terceiros:
+**Arquivo:** `buffer_manager.py`
 
-```bash
-pip install matplotlib
+Simula o buffer de reprodução do player. A cada segmento baixado:
+
+1. **Consumo durante download:** `buffer -= download_time_s`
+   - Se buffer zerar antes do download terminar: rebuffer (stall) detectado
+2. **Reabastecimento:** `buffer += segment_duration_s`
+3. **Pacing de playback:** após o buffer atingir 15s, aguarda `max(0, segment_duration_s − download_time_s)` segundos para simular o ritmo real de reprodução
+
+O pacing é essencial para a simulação ser realista — sem ele, downloads rápidos fariam o buffer crescer indefinidamente e a política nunca precisaria reagir a restrições.
+
+**Parâmetros:**
+
+| Constante         | Valor | Significado                          |
+|-------------------|-------|--------------------------------------|
+| `BUFFER_MAX_S`    | 20s   | Teto do buffer (pausa o download)    |
+| `BUFFER_TARGET_S` | 15s   | Limiar de ativação do pacing         |
+
+### Cliente e Failover
+
+**Arquivo:** `client.py`
+
+- Carrega o manifest via HTTP (lista de servidores e representações disponíveis)
+- Downloads em chunks de 4096 bytes com medição de throughput e jitter
+- **Detecção de falha rápida:** timeout de conexão de 5s + timeout por chunk idle de 1.5s — se nenhum byte chegar em 1.5s durante o download, aborta imediatamente sem esperar o timeout completo
+- **Failover:** ao detectar falha, faz health check no servidor alternativo (`/health`) e migra se disponível
+
+O jitter é calculado como o desvio padrão dos intervalos entre chegadas de chunks:
+
+```python
+intervalos = [chunk_times[i] - chunk_times[i-1] for i in range(1, len(chunk_times))]
+jitter_ms  = desvio_padrao(intervalos) × 1000
+```
+
+### Métricas CSV
+
+**Arquivo:** `metrics.py`
+
+Grava uma linha por segmento com 14 campos:
+
+| Campo                | Descrição                                         |
+|----------------------|---------------------------------------------------|
+| `segment`            | Número do segmento                                |
+| `timestamp`          | Horário do download                               |
+| `server_id`          | Servidor usado (A ou B)                           |
+| `quality`            | Resolução escolhida                               |
+| `bitrate_kbps`       | Bitrate nominal da resolução                      |
+| `throughput_kbps`    | Throughput medido no download                     |
+| `download_time_s`    | Tempo de download em segundos                     |
+| `jitter_network_ms`  | Jitter medido neste segmento                      |
+| `jitter_ewma_ms`     | EWMA do jitter (α=0.2, calculada em main.py)      |
+| `buffer_level_s`     | Nível do buffer após o segmento                   |
+| `buffer_can_play`    | 1 se buffer não zerou, 0 se houve stall           |
+| `rebuffer_event`     | 1 se houve rebuffer neste segmento                |
+| `stall_duration_s`   | Duração do stall em segundos (0 se não houve)     |
+| `failover_total`     | Total acumulado de failovers na sessão            |
+
+---
+
+## Análise e Gráficos
+
+### Análise textual — `analysis.py`
+
+Gera para cada política:
+- Número de oscilações de qualidade (trocas consecutivas de resolução)
+- Eventos e taxa de rebuffer
+- Velocidade de adaptação (segmentos até a qualidade estabilizar por 3 consecutivos)
+- Distribuição de qualidade (% do tempo em cada resolução)
+- Buffer médio e throughput médio da sessão
+
+E uma tabela comparativa lado a lado entre todas as políticas disponíveis.
+
+### Gráficos — `plot.py`
+
+Todos salvos em `charts/`.
+
+#### `comparison_chart.png`
+Dois painéis sobrepostos compartilhando o eixo X (segmentos):
+- **Superior:** throughput medido por segmento para cada política (linhas tracejadas)
+- **Inferior:** resolução selecionada ao longo do tempo, com eixo Y em resoluções (240p → 1080p)
+
+Linhas verticais vermelhas semitransparentes indicam rebuffers; linhas laranjas pontilhadas indicam failovers.
+
+#### `buffer_chart.png`
+Nível do buffer em segundos ao longo dos segmentos para todas as políticas. Marcadores `▼` indicam onde ocorreram rebuffers. Cada evento de failover é marcado com uma cor distinta (vermelho, roxo, marrom, teal).
+
+#### `jitter_chart.png`
+EWMA do jitter em ms por segmento para cada política. Útil para correlacionar períodos de alta variação de atraso com quedas de qualidade ou ativação da penalidade de jitter na P3.
+
+#### `quality_dist_chart.png`
+Barras agrupadas com a porcentagem de segmentos em cada resolução para cada política. Permite comparar visualmente qual política entrega maior qualidade média ao longo da sessão.
+
+### Resultados típicos (rede estável, 30 segmentos)
+
+| Métrica                  | P1     | P2     | P3     |
+|--------------------------|--------|--------|--------|
+| 1080p (% do tempo)       | 0%     | 73.3%  | 93.3%  |
+| Segmentos até estabilizar | 2      | 9      | 3      |
+| Oscilações de qualidade  | 1      | 4      | 1      |
+| Rebuffers                | 1      | 1      | 1      |
+
+**Por que P3 é superior:** a EWMA reage mais rápido a uma rede estável que a interpolação de buffer da P2, chegando em 1080p já no segmento 3–5 enquanto P2 precisa encher o buffer até 12s (segmento 9+). A penalidade de jitter protege contra degradação em cenários de entrega irregular com buffer baixo, e o bônus de buffer permite aproveitar a margem acumulada para manter ou subir qualidade após perturbações temporárias.
+
+---
+
+## Estrutura de Arquivos
+
+```
+.
+├── main.py                    # Ponto de entrada e laço principal de streaming
+├── abr.py                     # Política 1 — Rate-Based (média simples × fator fixo)
+├── abr_v2.py                  # Política 2 — Buffer-Based (interpolação linear)
+├── abr_v3.py                  # Política 3 — EWMA + Penalidade de Jitter
+├── buffer_manager.py          # Simulação do buffer do player com pacing
+├── client.py                  # Cliente HTTP, health check, failover
+├── metrics.py                 # Logger CSV (14 campos por segmento)
+├── analysis.py                # Análise estatística comparativa entre políticas
+├── plot.py                    # Geração de 4 gráficos comparativos
+├── streaming_metrics_p1.csv   # Métricas da última execução da Política 1
+├── streaming_metrics_p2.csv   # Métricas da última execução da Política 2
+├── streaming_metrics_p3.csv   # Métricas da última execução da Política 3
+└── charts/
+    ├── comparison_chart.png   # Throughput vs resolução por política
+    ├── buffer_chart.png       # Nível do buffer ao longo do tempo
+    ├── jitter_chart.png       # EWMA do jitter por segmento
+    └── quality_dist_chart.png # Distribuição percentual de resoluções
 ```

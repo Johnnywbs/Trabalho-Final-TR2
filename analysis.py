@@ -2,9 +2,9 @@
 analysis.py  –  Análise de deficiências e comparação de políticas ABR
 
 Uso:
-    python analysis.py [--p1 arquivo.csv] [--p2 arquivo.csv]
+    python analysis.py [--p1 arquivo.csv] [--p2 arquivo.csv] [--p3 arquivo.csv]
 
-Padrão: streaming_metrics_p1.csv  vs  streaming_metrics_p2.csv
+Padrão: streaming_metrics_p1.csv  vs  streaming_metrics_p2.csv  vs  streaming_metrics_p3.csv
 """
 
 import argparse
@@ -179,8 +179,10 @@ def print_failover_analysis(label, rows):
         )
 
 
-def print_comparison_table(rows_p1, rows_p2):
+def print_comparison_table(policies: dict):
+    """policies: {label: rows} — ex: {'P1': rows_p1, 'P2': rows_p2, 'P3': rows_p3}"""
     ALL_QUALITIES = ["240p", "360p", "480p", "720p", "1080p"]
+    labels = list(policies.keys())
 
     def fmt(v, fmt_str="{:.1f}"):
         return fmt_str.format(v) if v is not None else "N/A"
@@ -188,67 +190,85 @@ def print_comparison_table(rows_p1, rows_p2):
     def safe_metric(rows, fn):
         return fn(rows) if rows else None
 
-    osc1  = safe_metric(rows_p1, oscillation_count)
-    osc2  = safe_metric(rows_p2, oscillation_count)
-    rb1   = safe_metric(rows_p1, rebuffer_stats) or {}
-    rb2   = safe_metric(rows_p2, rebuffer_stats) or {}
-    spd1  = safe_metric(rows_p1, adaptation_speed)
-    spd2  = safe_metric(rows_p2, adaptation_speed)
-    buf1  = safe_metric(rows_p1, avg_buffer_level)
-    buf2  = safe_metric(rows_p2, avg_buffer_level)
-    tpt1  = safe_metric(rows_p1, avg_throughput)
-    tpt2  = safe_metric(rows_p2, avg_throughput)
-    dist1 = safe_metric(rows_p1, quality_distribution) or {}
-    dist2 = safe_metric(rows_p2, quality_distribution) or {}
+    metrics = {}
+    for label, rows in policies.items():
+        metrics[label] = {
+            "osc"  : safe_metric(rows, oscillation_count),
+            "rb"   : safe_metric(rows, rebuffer_stats) or {},
+            "spd"  : safe_metric(rows, adaptation_speed),
+            "buf"  : safe_metric(rows, avg_buffer_level),
+            "tpt"  : safe_metric(rows, avg_throughput),
+            "dist" : safe_metric(rows, quality_distribution) or {},
+        }
 
     W = 10
-    sep = f"  {'-'*25}|{'-'*W}|{'-'*W}"
+    sep = f"  {'-'*25}|" + "|".join("-"*W for _ in labels)
 
     print(f"\n{'='*48}")
-    print(f"  COMPARAÇÃO P1 vs P2")
+    print(f"  COMPARAÇÃO {' vs '.join(labels)}")
     print(f"{'='*48}")
-    print(f"  {'Métrica':<25}| {'P1':^{W-1}}| {'P2':^{W-1}}")
+    print(f"  {'Métrica':<25}|" + "".join(f" {l:^{W-2}}|" for l in labels))
     print(sep)
-    print(f"  {'Oscilações':<25}| {str(osc1):^{W-1}}| {str(osc2):^{W-1}}")
-    print(f"  {'Rebuffer eventos':<25}| {str(rb1.get('count','N/A')):^{W-1}}| {str(rb2.get('count','N/A')):^{W-1}}")
-    print(f"  {'Taxa rebuffer (%)':<25}| {fmt(rb1.get('rate_pct')):^{W-1}}| {fmt(rb2.get('rate_pct')):^{W-1}}")
-    print(f"  {'Stall total (s)':<25}| {fmt(rb1.get('total_stall_s'), '{:.2f}'):^{W-1}}| {fmt(rb2.get('total_stall_s'), '{:.2f}'):^{W-1}}")
-    print(f"  {'Adaptação (segs)':<25}| {str(spd1):^{W-1}}| {str(spd2):^{W-1}}")
-    print(f"  {'Buffer médio (s)':<25}| {fmt(buf1, '{:.2f}'):^{W-1}}| {fmt(buf2, '{:.2f}'):^{W-1}}")
-    print(f"  {'Throughput médio (kbps)':<25}| {fmt(tpt1, '{:.1f}'):^{W-1}}| {fmt(tpt2, '{:.1f}'):^{W-1}}")
+
+    def row(name, key, fmt_str=None, sub=None):
+        vals = []
+        for l in labels:
+            v = metrics[l][key]
+            if sub:
+                v = v.get(sub) if isinstance(v, dict) else v
+            vals.append(fmt(v, fmt_str) if fmt_str else str(v))
+        print(f"  {name:<25}|" + "".join(f" {v:^{W-2}}|" for v in vals))
+
+    row("Oscilações", "osc")
+    row("Rebuffer eventos", "rb", sub="count")
+    row("Taxa rebuffer (%)", "rb", "{:.1f}", sub="rate_pct")
+    row("Stall total (s)", "rb", "{:.2f}", sub="total_stall_s")
+    row("Adaptação (segs)", "spd")
+    row("Buffer médio (s)", "buf", "{:.2f}")
+    row("Throughput médio (kbps)", "tpt", "{:.1f}")
     print(sep)
     print(f"  {'Distribuição de qualidade':}")
     for q in ALL_QUALITIES:
-        v1 = dist1.get(q, 0.0)
-        v2 = dist2.get(q, 0.0)
-        print(f"    {q:<6}{'%':>3}           | {fmt(v1, '{:.1f}'):^{W-1}}| {fmt(v2, '{:.1f}'):^{W-1}}")
+        vals = [metrics[l]["dist"].get(q, 0.0) for l in labels]
+        print(f"    {q:<6}{'%':>3}           |" + "".join(f" {fmt(v):^{W-2}}|" for v in vals))
 
 
 # ---------------------------------------------------------------------------
 # Ponto de entrada
 # ---------------------------------------------------------------------------
 
+POLICY_FULL_LABELS = {
+    "P1": "POLÍTICA 1 (RATE-BASED BASELINE)",
+    "P2": "POLÍTICA 2 (BUFFER-BASED)",
+    "P3": "POLÍTICA 3 (ESTATÍSTICA + JITTER)",
+}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Análise de políticas ABR")
     parser.add_argument("--p1", default="streaming_metrics_p1.csv")
     parser.add_argument("--p2", default="streaming_metrics_p2.csv")
+    parser.add_argument("--p3", default="streaming_metrics_p3.csv")
     parser.add_argument("--no-charts", action="store_true",
                         help="Não gerar gráficos (útil se matplotlib não estiver disponível)")
     args = parser.parse_args()
 
-    rows_p1 = load_csv(args.p1)
-    rows_p2 = load_csv(args.p2)
+    csv_paths = {"P1": args.p1, "P2": args.p2, "P3": args.p3}
+    csv_paths = {l: p for l, p in csv_paths.items() if os.path.exists(p)}
+    policies = {label: load_csv(path) for label, path in csv_paths.items()}
 
-    print_policy_analysis("POLÍTICA 1 (RATE-BASED BASELINE)", rows_p1)
-    print_policy_analysis("POLÍTICA 2 (BUFFER-BASED)", rows_p2)
-    print_failover_analysis("POLÍTICA 2", rows_p2)
-    print_comparison_table(rows_p1, rows_p2)
+    for label, rows in policies.items():
+        print_policy_analysis(POLICY_FULL_LABELS.get(label, label), rows)
+    for label, rows in policies.items():
+        if label != "P1":
+            print_failover_analysis(POLICY_FULL_LABELS.get(label, label), rows)
+    print_comparison_table(policies)
 
     if not args.no_charts:
         try:
             import plot
             print("\nGerando gráficos comparativos…")
-            plot.generate_all_charts(args.p1, args.p2)
+            plot.generate_all_charts(csv_paths)
             print("Gráficos salvos: comparison_chart.png, buffer_chart.png, "
                   "jitter_chart.png, quality_dist_chart.png")
         except ImportError as exc:

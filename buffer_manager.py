@@ -1,7 +1,7 @@
 import time
 
 BUFFER_MAX_S    = 20.0
-BUFFER_RESUME_S = 15.0   # limiar de retomada após pausa
+BUFFER_TARGET_S = 15.0   # limiar que liga o pacing e nível de retomada após pausa
 
 
 class BufferManager:
@@ -25,7 +25,7 @@ class BufferManager:
             segment_duration_s – duração de cada segmento (para log)
         """
 
-        excesso = self.buffer_level_s - BUFFER_RESUME_S
+        excesso = self.buffer_level_s - BUFFER_TARGET_S
         if excesso <= 0:
             return  # nada a fazer
 
@@ -36,11 +36,31 @@ class BufferManager:
         time.sleep(excesso)           # aguarda o buffer "consumir" até o limiar
         tempo_pausado = time.time() - inicio_pausa
 
-        self.buffer_level_s  = BUFFER_RESUME_S   # reflete o consumo simulado
+        self.buffer_level_s  = BUFFER_TARGET_S   # reflete o consumo simulado
         self.total_pause_time_s += tempo_pausado
 
         print(f"[Buffer] ▶️  Retomando. Buffer: {self.buffer_level_s:.1f}s "
               f"(pausado por {tempo_pausado:.1f}s)")
+
+    # ------------------------------------------------------------------
+
+    def pace_playback(self, download_time_s: float, segment_duration_s: float):
+        """
+        Pacing do download para acompanhar o ritmo real do player.
+        Só entra em ação quando o buffer já atingiu o nível-alvo — antes disso,
+        deixa baixar na velocidade máxima da rede para encher o buffer rápido.
+        """
+        if self.buffer_level_s < BUFFER_TARGET_S:
+            return  # fase de enchimento: sem espera
+
+        wait_s = max(0.0, segment_duration_s - download_time_s)
+        if wait_s <= 0:
+            return  # download já levou mais tempo que o playback, sem espera extra
+
+        time.sleep(wait_s)
+        self.buffer_level_s = max(0.0, self.buffer_level_s - wait_s)
+        print(f"[Buffer] ⏸ Ritmo de playback: aguardando {wait_s:.2f}s "
+              f"(buffer: {self.buffer_level_s:.2f}s)")
 
     # ------------------------------------------------------------------
 
