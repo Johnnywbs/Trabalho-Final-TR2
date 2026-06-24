@@ -3,10 +3,9 @@ import urllib.error
 import json
 import time
 
-
-
-HEALTH_CHECK_TIMEOUT_S     = 3
-SEGMENT_DOWNLOAD_TIMEOUT_S = 5
+HEALTH_CHECK_TIMEOUT_S     = 1
+SEGMENT_DOWNLOAD_TIMEOUT_S = 5    # timeout de conexão/primeira resposta
+CHUNK_IDLE_TIMEOUT_S       = 3  # timeout por chunk — aborta se a leitura travar
 CHUNK_SIZE = 4096
 
 MANIFEST_URL = "http://137.131.178.229:8080/manifest"
@@ -183,6 +182,10 @@ class StreamingClient:
                 if resp.status != 200:
                     print(f"[Cliente] HTTP {resp.status} para {url}")
                     return None
+                # Reduz o timeout do socket para cada leitura individual de chunk.
+                # Isso evita que resp.read() bloqueie por SEGMENT_DOWNLOAD_TIMEOUT_S
+                # inteiros quando o servidor para de enviar dados no meio do download.
+                resp.fp.raw._sock.settimeout(CHUNK_IDLE_TIMEOUT_S)
                 while True:
                     chunk = resp.read(CHUNK_SIZE)
                     if not chunk:

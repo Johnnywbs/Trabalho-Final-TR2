@@ -24,7 +24,7 @@ class BufferBasedABR:
         self.up_counter = 0
         self.down_counter = 0
 
-    def record_throughput(self, throughput_kbps: float):
+    def record_throughput(self, throughput_kbps: float, _jitter_ms: float = 0.0):
         pass
 
     def get_next_quality(self, buffer_level_s: float = 0.0) -> str:
